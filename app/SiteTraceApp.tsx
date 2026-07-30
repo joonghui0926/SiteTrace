@@ -9,6 +9,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { buildDemoCase } from "./demoCase";
 
 type CaseStatus =
   | "UPLOADED"
@@ -318,7 +319,9 @@ export function SiteTraceApp() {
   const [reviewConfirmed, setReviewConfirmed] = useState(false);
   const [approvalError, setApprovalError] = useState<string | null>(null);
   const [approvedLocally, setApprovedLocally] = useState(false);
+  const [demoMode, setDemoMode] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
+  const demoUrlsRef = useRef<string[]>([]);
 
   const apiBase = useMemo(
     () =>
@@ -357,8 +360,60 @@ export function SiteTraceApp() {
     caseRecord?.status === "COMPLETED";
 
   useEffect(() => {
-    return () => abortRef.current?.abort();
+    return () => {
+      abortRef.current?.abort();
+      demoUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
+    };
   }, []);
+
+  function activateDemoResult() {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    demoUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
+    const demo = buildDemoCase({
+      caseId: caseRecord?.case_id,
+      title: title.trim(),
+      videos,
+    });
+    demoUrlsRef.current = demo.mediaUrls;
+    setCaseRecord(demo.record as CaseRecord);
+    setDemoMode(true);
+    setError(null);
+    setApprovalError(null);
+    setApprovedLocally(false);
+    setReviewConfirmed(false);
+    setActiveEventId("EVENT-WALKWAY-BLOCKED");
+    setActiveClipId("EV-CAM-03-03");
+    setActiveView("comparison");
+    setRunState("ready");
+    window.requestAnimationFrame(() => {
+      const workspace = document.getElementById("investigation-workspace");
+      workspace?.focus({ preventScroll: true });
+      workspace?.scrollIntoView({
+        behavior: preferredScrollBehavior(),
+        block: "start",
+      });
+    });
+  }
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (
+        event.key.toLowerCase() !== "n" ||
+        event.metaKey ||
+        event.ctrlKey ||
+        event.altKey ||
+        target?.matches("input, textarea, select, [contenteditable='true']")
+      ) {
+        return;
+      }
+      event.preventDefault();
+      activateDemoResult();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  });
 
   const activePhase = useMemo(() => {
     if (investigation) return investigationPhases.length;
@@ -440,6 +495,7 @@ export function SiteTraceApp() {
     abortRef.current = controller;
     setError(null);
     setApprovedLocally(false);
+    setDemoMode(false);
     setReviewConfirmed(false);
     setCaseRecord(null);
     setRunState("uploading");
@@ -603,6 +659,7 @@ export function SiteTraceApp() {
     setReviewConfirmed(false);
     setApprovalError(null);
     setApprovedLocally(false);
+    setDemoMode(false);
     window.requestAnimationFrame(() => {
       const titleInput = document.getElementById("investigation-title");
       titleInput?.focus({ preventScroll: true });
@@ -632,18 +689,23 @@ export function SiteTraceApp() {
         ) : (
           <p className="header-purpose">Evidence-led safety investigations</p>
         )}
-        <button
-          className="text-button"
-          type="button"
-          onClick={resetWorkspace}
-          disabled={busy && runState !== "investigating"}
-        >
-          {runState === "investigating"
-            ? "Cancel investigation"
-            : caseRecord
-              ? "New investigation"
-              : "Clear files"}
-        </button>
+        <div className="header-actions">
+          <button className="demo-button" type="button" onClick={activateDemoResult}>
+            Demo result <kbd>N</kbd>
+          </button>
+          <button
+            className="text-button"
+            type="button"
+            onClick={resetWorkspace}
+            disabled={busy && runState !== "investigating"}
+          >
+            {runState === "investigating"
+              ? "Cancel investigation"
+              : caseRecord
+                ? "New investigation"
+                : "Clear files"}
+          </button>
+        </div>
       </header>
 
       <section className="hero" id="top">
@@ -859,28 +921,37 @@ export function SiteTraceApp() {
       </section>
 
       {investigation && caseRecord ? (
-        <InvestigationWorkspace
-          apiBase={apiBase}
-          record={caseRecord}
-          investigation={investigation}
-          events={events}
-          activeEvent={activeEvent}
-          activeClip={activeClip}
-          activeClipId={activeClipId}
-          activeView={activeView}
-          setActiveView={setActiveView}
-          chooseEvent={chooseEvent}
-          setActiveClipId={setActiveClipId}
-          openEvidence={openEvidence}
-          reviewer={reviewer}
-          setReviewer={setReviewer}
-          reviewConfirmed={reviewConfirmed}
-          setReviewConfirmed={setReviewConfirmed}
-          approveReport={approveReport}
-          approvalError={approvalError}
-          approved={approved}
-          approving={runState === "approving"}
-        />
+        <>
+          {demoMode && (
+            <div className="demo-banner" role="status">
+              <span>DEMO RESULT</span>
+              <strong>Six staged CCTV clips connected into one evidence graph</strong>
+              <small>Press N anytime to reset this presentation view.</small>
+            </div>
+          )}
+          <InvestigationWorkspace
+            apiBase={apiBase}
+            record={caseRecord}
+            investigation={investigation}
+            events={events}
+            activeEvent={activeEvent}
+            activeClip={activeClip}
+            activeClipId={activeClipId}
+            activeView={activeView}
+            setActiveView={setActiveView}
+            chooseEvent={chooseEvent}
+            setActiveClipId={setActiveClipId}
+            openEvidence={openEvidence}
+            reviewer={reviewer}
+            setReviewer={setReviewer}
+            reviewConfirmed={reviewConfirmed}
+            setReviewConfirmed={setReviewConfirmed}
+            approveReport={approveReport}
+            approvalError={approvalError}
+            approved={approved}
+            approving={runState === "approving"}
+          />
+        </>
       ) : (
         <section className="empty-workspace" aria-labelledby="empty-title">
           <div className="empty-marker" aria-hidden="true">
@@ -1214,12 +1285,16 @@ function EvidenceView({
                 controls
                 preload="metadata"
                 aria-label={`Evidence clip ${activeClip.evidence_clip_id}: ${activeClip.summary}`}
-                src={apiUrl(
-                  apiBase,
-                  `${casePath(caseId)}/evidence/${encodeURIComponent(
-                    activeClip.evidence_clip_id,
-                  )}#t=${activeClip.start_sec},${activeClip.end_sec}`,
-                )}
+                src={
+                  activeClip.source_url
+                    ? `${activeClip.source_url}#t=${activeClip.start_sec},${activeClip.end_sec}`
+                    : apiUrl(
+                        apiBase,
+                        `${casePath(caseId)}/evidence/${encodeURIComponent(
+                          activeClip.evidence_clip_id,
+                        )}#t=${activeClip.start_sec},${activeClip.end_sec}`,
+                      )
+                }
               >
                 Your browser does not support video playback.
               </video>

@@ -67,7 +67,7 @@ test("server-renders the exact upload-first SiteTrace empty state", async () => 
   );
 });
 
-test("keeps the API workflow dynamic and free of sample incident facts", async () => {
+test("keeps the API workflow dynamic while exposing a labeled demo shortcut", async () => {
   const app = await readFile(
     new URL("../app/SiteTraceApp.tsx", import.meta.url),
     "utf8",
@@ -91,6 +91,8 @@ test("keeps the API workflow dynamic and free of sample incident facts", async (
   assert.match(app, /investigation\.planned_steps/);
   assert.match(app, /investigation\.graph_metrics/);
   assert.match(app, /investigation\.sponsor_trace/);
+  assert.match(app, /buildDemoCase/);
+  assert.match(app, /event\.key\.toLowerCase\(\) !== "n"/);
 
   assert.doesNotMatch(app, demoFacts);
   assert.doesNotMatch(app, mojibake);
