@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import json
 import re
 from collections import defaultdict
@@ -215,6 +216,8 @@ class InvestigationPipeline:
     async def start(self, case_id: str) -> CaseRecord:
         record = self.store.get(case_id)
         record.status = CaseStatus.PROCESSING
+        record.current_stage = "QUEUED"
+        record.completed_stages = []
         record.error = None
         self.store.save(record)
         runtime = self.runtime_for(case_id)
@@ -231,6 +234,7 @@ class InvestigationPipeline:
         record = self.store.get(case_id)
         if result.status.value == "AWAITING_APPROVAL":
             record.status = CaseStatus.AWAITING_APPROVAL
+            record.current_stage = WorkflowStage.HUMAN_APPROVAL.value
         elif result.status.value == "FAILED":
             record.status = CaseStatus.FAILED
             record.error = result.failure
@@ -257,10 +261,14 @@ class InvestigationPipeline:
         record = self.store.get(case_id)
         if approved and result.status.value == "COMPLETED":
             record.status = CaseStatus.COMPLETED
+            record.current_stage = None
+            if WorkflowStage.HUMAN_APPROVAL.value not in record.completed_stages:
+                record.completed_stages.append(WorkflowStage.HUMAN_APPROVAL.value)
             record.approved_by = reviewer
             record.approved_at = datetime.now(UTC)
         elif not approved:
             record.status = CaseStatus.UPLOADED
+            record.current_stage = None
         self.store.save(record)
         return record
 
@@ -269,7 +277,7 @@ class InvestigationPipeline:
         case_id: str,
         runtime: SiteTraceStrandsRuntime,
     ) -> dict[WorkflowStage, Any]:
-        return {
+        raw_handlers: dict[WorkflowStage, Any] = {
             WorkflowStage.PARSE_JHA: self._parse_jha,
             WorkflowStage.ANALYZE_CAMERAS: self._analyze_cameras,
             WorkflowStage.CONNECT_CROSS_CAMERA_EVENTS: self._connect_events,
@@ -283,6 +291,28 @@ class InvestigationPipeline:
             ),
             WorkflowStage.PUBLISH_REPORT: self._publish,
         }
+        return {
+            stage: self._tracked_handler(stage, handler)
+            for stage, handler in raw_handlers.items()
+        }
+
+    def _tracked_handler(self, stage: WorkflowStage, handler: Any) -> Any:
+        """Persist stage progress around an otherwise unchanged handler."""
+
+        async def tracked(context: WorkflowExecutionContext) -> Any:
+            record = self.store.get(context.case_id)
+            record.current_stage = stage.value
+            self.store.save(record)
+            output = handler(context)
+            if inspect.isawaitable(output):
+                output = await output
+            record = self.store.get(context.case_id)
+            if stage.value not in record.completed_stages:
+                record.completed_stages.append(stage.value)
+            self.store.save(record)
+            return output
+
+        return tracked
 
     async def _parse_jha(self, context: WorkflowExecutionContext) -> dict[str, Any]:
         record = self.store.get(context.case_id)

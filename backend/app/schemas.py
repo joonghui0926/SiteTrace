@@ -184,6 +184,8 @@ class CaseRecord(BaseModel):
     videos: list[UploadedInput] = Field(min_length=1)
     investigation: InvestigationPackage | None = None
     workflow_run_id: str | None = None
+    current_stage: str | None = None
+    completed_stages: list[str] = Field(default_factory=list)
     approved_by: str | None = None
     approved_at: datetime | None = None
     report_path: str | None = None

@@ -408,6 +408,8 @@ class Neo4jService:
         OR EXISTS { MATCH (event)-[:BLOCKS]->(zone) }
       )
     OPTIONAL MATCH (event)-[:SUPPORTED_BY]->(clip:EvidenceClip)
+    WITH investigation, jha, step, zone, event,
+         collect(DISTINCT clip.id) AS evidence_clip_ids
     RETURN
       'PROHIBITED_ZONE' AS finding_type,
       'CONFIRMED_DEVIATION' AS status,
@@ -418,11 +420,12 @@ class Neo4jService:
       null AS control_id,
       'Avoid ' + zone.name AS planned_control,
       event.id AS event_id,
+      event.global_start_ms AS event_start_ms,
       zone.id AS zone_id,
       [] AS coverage_ids,
-      collect(DISTINCT clip.id) AS evidence_clip_ids,
+      evidence_clip_ids,
       'Observed event occurred in or blocked a prohibited zone.' AS rationale
-    ORDER BY step.step_order, event.global_start_ms
+    ORDER BY step_order, event_start_ms
     """
 
     SEQUENCE_REVERSAL_DIFF = """

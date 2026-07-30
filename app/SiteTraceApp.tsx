@@ -124,6 +124,8 @@ type CaseRecord = {
   created_at?: string;
   updated_at?: string;
   investigation?: Investigation | null;
+  current_stage?: string | null;
+  completed_stages?: string[];
   approved_by?: string | null;
   approved_at?: string | null;
   report_path?: string | null;
@@ -274,6 +276,31 @@ function tracePhase(entry: SponsorTraceEntry) {
   return -1;
 }
 
+function workflowStagePhase(stage?: string | null) {
+  switch ((stage ?? "").toUpperCase()) {
+    case "QUEUED":
+      return 0;
+    case "PARSE_JHA":
+      return 1;
+    case "ANALYZE_CAMERAS":
+      return 2;
+    case "CONNECT_CROSS_CAMERA_EVENTS":
+      return 3;
+    case "WRITE_CONTEXT_GRAPH":
+      return 5;
+    case "COMPARE_PLANNED_OBSERVED":
+      return 6;
+    case "VERIFY_EVIDENCE":
+      return 7;
+    case "DRAFT_INVESTIGATION_REPORT":
+    case "HUMAN_APPROVAL":
+    case "PUBLISH_REPORT":
+      return 8;
+    default:
+      return -1;
+  }
+}
+
 function entryValue(entry: SponsorTraceEntry, keys: string[]) {
   for (const key of keys) {
     const value = entry[key];
@@ -419,12 +446,23 @@ export function SiteTraceApp() {
     if (investigation) return investigationPhases.length;
     if (runState === "uploading") return 0;
     if (runState !== "investigating") return -1;
+    const persistedStage = workflowStagePhase(caseRecord?.current_stage);
+    const completedStage = Math.max(
+      -1,
+      ...(caseRecord?.completed_stages ?? []).map(workflowStagePhase),
+    );
     const traced = Math.max(
       -1,
       ...(caseRecord?.investigation?.sponsor_trace ?? []).map(tracePhase),
     );
-    return Math.max(1, traced);
-  }, [caseRecord?.investigation?.sponsor_trace, investigation, runState]);
+    return Math.max(0, persistedStage, completedStage + 1, traced);
+  }, [
+    caseRecord?.completed_stages,
+    caseRecord?.current_stage,
+    caseRecord?.investigation?.sponsor_trace,
+    investigation,
+    runState,
+  ]);
 
   function selectSingleFile(
     event: ChangeEvent<HTMLInputElement>,
@@ -1100,6 +1138,8 @@ function InvestigationWorkspace({
         </div>
       </header>
 
+      <ResultSnapshot investigation={investigation} />
+
       <nav className="workspace-tabs" aria-label="Investigation views">
         <button
           type="button"
@@ -1183,6 +1223,179 @@ function Metric({ value, label }: { value: number; label: string }) {
       <strong>{value.toLocaleString()}</strong>
       <span>{label}</span>
     </div>
+  );
+}
+
+function ResultSnapshot({ investigation }: { investigation: Investigation }) {
+  const findings = investigation.findings ?? [];
+  const events = investigation.events ?? [];
+  const clips = investigation.evidence_clips ?? [];
+  const confirmed = findings.filter(
+    (finding) => finding.status === "CONFIRMED_DEVIATION",
+  ).length;
+  const compliant = findings.filter(
+    (finding) => finding.status === "COMPLIANT",
+  ).length;
+  const unverified = findings.filter(
+    (finding) =>
+      finding.status === "UNVERIFIABLE" ||
+      finding.status === "REQUIRED_CONTROL_NOT_OBSERVED",
+  ).length;
+  const evidenceBacked = findings.filter(
+    (finding) => finding.evidence_clip_ids.length > 0,
+  ).length;
+  const coverage = findings.length
+    ? Math.round((evidenceBacked / findings.length) * 100)
+    : 0;
+  const averageConfidence = events.length
+    ? Math.round(
+        (events.reduce((sum, event) => sum + event.confidence, 0) /
+          events.length) *
+          100,
+      )
+    : 0;
+  const cameraCounts = [...new Set(events.map((event) => event.camera_id))]
+    .map((camera) => ({
+      camera,
+      count: events.filter((event) => event.camera_id === camera).length,
+    }))
+    .sort((left, right) => left.camera.localeCompare(right.camera));
+  const maxCameraCount = Math.max(
+    1,
+    ...cameraCounts.map((camera) => camera.count),
+  );
+  const relationships =
+    Object.entries(investigation.graph_metrics ?? {}).find(([key]) =>
+      key.toLowerCase().includes("relationship"),
+    )?.[1] ??
+    findings.reduce(
+      (sum, finding) => sum + finding.graph_path_relationships.length,
+      0,
+    );
+
+  return (
+    <section className="result-snapshot" aria-labelledby="result-snapshot-title">
+      <div className="snapshot-lead">
+        <div>
+          <p className="step-label">Investigation signal</p>
+          <h3 id="result-snapshot-title">
+            {confirmed
+              ? `${confirmed} verified variance${confirmed === 1 ? "" : "s"} surfaced`
+              : "Evidence review complete"}
+          </h3>
+        </div>
+        <span className="snapshot-confidence">
+          <i aria-hidden="true" />
+          {averageConfidence}% mean event confidence
+        </span>
+      </div>
+
+      <div className="snapshot-grid">
+        <article className="snapshot-card finding-chart">
+          <div className="snapshot-card-heading">
+            <span>Finding distribution</span>
+            <strong>{findings.length}</strong>
+          </div>
+          <div
+            className="finding-stack"
+            role="img"
+            aria-label={`${confirmed} confirmed deviations, ${compliant} compliant findings, and ${unverified} findings requiring review`}
+          >
+            {confirmed > 0 && (
+              <i
+                className="stack-deviation"
+                style={{ flexGrow: confirmed }}
+                title={`${confirmed} confirmed deviations`}
+              />
+            )}
+            {compliant > 0 && (
+              <i
+                className="stack-compliant"
+                style={{ flexGrow: compliant }}
+                title={`${compliant} compliant findings`}
+              />
+            )}
+            {unverified > 0 && (
+              <i
+                className="stack-unverified"
+                style={{ flexGrow: unverified }}
+                title={`${unverified} findings requiring review`}
+              />
+            )}
+          </div>
+          <div className="finding-legend">
+            <span className="deviation">
+              <i aria-hidden="true" />
+              <b>{confirmed}</b> Deviation
+            </span>
+            <span className="compliant">
+              <i aria-hidden="true" />
+              <b>{compliant}</b> Compliant
+            </span>
+            <span className="unverified">
+              <i aria-hidden="true" />
+              <b>{unverified}</b> Review
+            </span>
+          </div>
+        </article>
+
+        <article className="snapshot-card coverage-chart">
+          <div
+            className="coverage-ring"
+            style={{
+              background: `conic-gradient(#00a86b 0 ${coverage}%, #e8eef0 ${coverage}% 100%)`,
+            }}
+            role="img"
+            aria-label={`${coverage}% of findings have cited video evidence`}
+          >
+            <span>
+              <strong>{coverage}%</strong>
+              cited
+            </span>
+          </div>
+          <div>
+            <span>Evidence coverage</span>
+            <p>
+              {evidenceBacked} of {findings.length} findings link directly to
+              source video.
+            </p>
+          </div>
+        </article>
+
+        <article className="snapshot-card camera-chart">
+          <div className="snapshot-card-heading">
+            <span>Camera activity</span>
+            <strong>{cameraCounts.length}</strong>
+          </div>
+          <div className="camera-bars" aria-label="Observed events by camera">
+            {cameraCounts.slice(0, 6).map(({ camera, count }) => (
+              <div key={camera}>
+                <span>{camera.replace("CAM-", "")}</span>
+                <i>
+                  <b
+                    style={{ height: `${Math.max(18, (count / maxCameraCount) * 100)}%` }}
+                  />
+                </i>
+                <small>{count}</small>
+              </div>
+            ))}
+          </div>
+        </article>
+
+        <article className="snapshot-card graph-signal">
+          <span>Connected context</span>
+          <strong>{relationships.toLocaleString()}</strong>
+          <p>Neo4j relationships join plan, events, people, assets, and zones.</p>
+          <div className="mini-network" aria-hidden="true">
+            <i />
+            <i />
+            <i />
+            <i />
+            <i />
+          </div>
+        </article>
+      </div>
+    </section>
   );
 }
 
@@ -1481,9 +1694,11 @@ function ComparisonView({
         <div className="panel-heading">
           <div>
             <p className="step-label">Neo4j context graph</p>
-            <h3 id="graph-title">Metrics & evidence paths</h3>
+            <h3 id="graph-title">Connected incident context</h3>
           </div>
+          <span>Live subgraph</span>
         </div>
+        <ContextGraph events={events} findings={findings} />
         {Object.keys(graphMetrics).length ? (
           <dl className="graph-metrics">
             {Object.entries(graphMetrics).map(([label, value]) => (
@@ -1518,6 +1733,289 @@ function ComparisonView({
           </p>
         </div>
       </aside>
+    </div>
+  );
+}
+
+type GraphNodeKind = "control" | "event" | "person" | "asset" | "zone" | "state";
+
+type VisualGraphNode = {
+  id: string;
+  kind: GraphNodeKind;
+  x: number;
+  y: number;
+};
+
+type VisualGraphEdge = {
+  source: string;
+  target: string;
+  relationship: string;
+};
+
+function graphNodeKind(id: string): GraphNodeKind {
+  const value = id.toUpperCase();
+  if (
+    value.startsWith("JHA") ||
+    value.includes("CONTROL") ||
+    value.includes("CLEARANCE") ||
+    value.includes("INSPECTION")
+  ) {
+    return "control";
+  }
+  if (value.startsWith("EVENT")) return "event";
+  if (
+    value.includes("WORKER") ||
+    value.includes("SPOTTER") ||
+    value.includes("OPERATOR") ||
+    value.includes("SUPERVISOR") ||
+    value.includes("PERSON")
+  ) {
+    return "person";
+  }
+  if (
+    value.includes("PALLET") ||
+    value.includes("FORKLIFT") ||
+    value.includes("TELEHANDLER") ||
+    value.includes("RADIO") ||
+    value.includes("EQUIPMENT")
+  ) {
+    return "asset";
+  }
+  if (
+    value.includes("ZONE") ||
+    value.includes("WALKWAY") ||
+    value.includes("AREA") ||
+    value.includes("ROUTE")
+  ) {
+    return "zone";
+  }
+  return "state";
+}
+
+function compactGraphLabel(value: string) {
+  const label = humanize(
+    value
+      .replace(/^EVENT-/, "")
+      .replace(/^JHA-/, "JHA ")
+      .replace(/-/g, "_"),
+  );
+  return label.length > 20 ? `${label.slice(0, 19)}…` : label;
+}
+
+function ContextGraph({
+  events,
+  findings,
+}: {
+  events: ObservedEvent[];
+  findings: DeviationFinding[];
+}) {
+  const graph = useMemo(() => {
+    const nodeIds = new Set<string>();
+    const allEdges: VisualGraphEdge[] = [];
+    const addEdge = (source: string, target: string, relationship: string) => {
+      if (!source || !target) return;
+      nodeIds.add(source);
+      nodeIds.add(target);
+      if (
+        !allEdges.some(
+          (edge) =>
+            edge.source === source &&
+            edge.target === target &&
+            edge.relationship === relationship,
+        )
+      ) {
+        allEdges.push({ source, target, relationship });
+      }
+    };
+
+    const orderedEvents = [...events]
+      .sort((left, right) => left.start_sec - right.start_sec)
+      .slice(0, 9);
+
+    orderedEvents.forEach((event, index) => {
+      nodeIds.add(event.event_id);
+      const previous = orderedEvents[index - 1];
+      if (previous) addEdge(previous.event_id, event.event_id, "PRECEDES");
+      event.actor_ids.slice(0, 2).forEach((actor) => {
+        addEdge(actor, event.event_id, "PARTICIPATES_IN");
+      });
+      event.object_ids.slice(0, 2).forEach((object) => {
+        addEdge(event.event_id, object, "INVOLVES");
+      });
+      event.zone_ids.slice(0, 1).forEach((zone) => {
+        addEdge(event.event_id, zone, "OCCURRED_IN");
+      });
+    });
+
+    findings.slice(0, 6).forEach((finding) => {
+      finding.graph_path_node_ids.forEach((node, index) => {
+        nodeIds.add(node);
+        const next = finding.graph_path_node_ids[index + 1];
+        if (next) {
+          addEdge(
+            node,
+            next,
+            finding.graph_path_relationships[index] ?? "RELATED_TO",
+          );
+        }
+      });
+    });
+
+    const degree = new Map<string, number>();
+    allEdges.forEach((edge) => {
+      degree.set(edge.source, (degree.get(edge.source) ?? 0) + 1);
+      degree.set(edge.target, (degree.get(edge.target) ?? 0) + 1);
+    });
+    const requiredIds = new Set([
+      ...orderedEvents.map((event) => event.event_id),
+      ...findings.slice(0, 5).map((finding) => finding.graph_path_node_ids[0]),
+    ]);
+    const selectedIds = [...nodeIds]
+      .sort((left, right) => {
+        const requiredDelta =
+          Number(requiredIds.has(right)) - Number(requiredIds.has(left));
+        return requiredDelta || (degree.get(right) ?? 0) - (degree.get(left) ?? 0);
+      })
+      .slice(0, 24);
+    const selected = new Set(selectedIds);
+    const edges = allEdges.filter(
+      (edge) => selected.has(edge.source) && selected.has(edge.target),
+    );
+    const kindOrder: GraphNodeKind[] = [
+      "control",
+      "person",
+      "event",
+      "asset",
+      "zone",
+    ];
+    const columnX: Record<GraphNodeKind, number> = {
+      control: 70,
+      person: 212,
+      event: 390,
+      asset: 560,
+      zone: 714,
+      state: 714,
+    };
+    const groups = new Map<GraphNodeKind, string[]>();
+    kindOrder.forEach((kind) => groups.set(kind, []));
+    selectedIds.forEach((id) => {
+      const kind = graphNodeKind(id);
+      groups.get(kind === "state" ? "zone" : kind)?.push(id);
+    });
+
+    const nodes: VisualGraphNode[] = [];
+    kindOrder.forEach((columnKind) => {
+      const ids = groups.get(columnKind) ?? [];
+      ids.forEach((id, index) => {
+        const kind = graphNodeKind(id);
+        const y = 38 + ((index + 1) * 424) / (ids.length + 1);
+        nodes.push({ id, kind, x: columnX[kind], y });
+      });
+    });
+    return { nodes, edges, totalNodes: nodeIds.size, totalEdges: allEdges.length };
+  }, [events, findings]);
+
+  if (!graph.nodes.length) {
+    return <InlineEmpty message="No connected graph data was returned." />;
+  }
+
+  const nodeById = new Map(graph.nodes.map((node) => [node.id, node]));
+
+  return (
+    <div className="context-graph">
+      <div className="graph-canvas">
+        <svg
+          viewBox="0 0 790 500"
+          role="img"
+          aria-labelledby="context-graph-title context-graph-description"
+        >
+          <title id="context-graph-title">Incident context graph</title>
+          <desc id="context-graph-description">
+            Connected JHA controls, people, observed events, assets, and work
+            zones used by the current investigation.
+          </desc>
+          <defs>
+            <marker
+              id="graph-arrow"
+              markerWidth="7"
+              markerHeight="7"
+              refX="6"
+              refY="3.5"
+              orient="auto"
+            >
+              <path d="M0,0 L7,3.5 L0,7 Z" />
+            </marker>
+            <filter id="graph-node-shadow" x="-20%" y="-20%" width="140%" height="140%">
+              <feDropShadow dx="0" dy="3" stdDeviation="4" floodOpacity=".1" />
+            </filter>
+          </defs>
+          <g className="visual-edges">
+            {graph.edges.map((edge, index) => {
+              const source = nodeById.get(edge.source);
+              const target = nodeById.get(edge.target);
+              if (!source || !target) return null;
+              const sameColumn = Math.abs(source.x - target.x) < 10;
+              const controlX = sameColumn
+                ? Math.min(770, source.x + 52 + (index % 3) * 9)
+                : source.x + (target.x - source.x) / 2;
+              const edgeClass =
+                edge.relationship === "PRECEDES"
+                  ? "sequence"
+                  : /REQUIRES|DESTINATION|MUST|CONTROL/.test(edge.relationship)
+                    ? "planned"
+                    : "context";
+              return (
+                <path
+                  key={`${edge.source}-${edge.relationship}-${edge.target}`}
+                  className={edgeClass}
+                  d={`M ${source.x} ${source.y} C ${controlX} ${source.y}, ${controlX} ${target.y}, ${target.x} ${target.y}`}
+                  markerEnd="url(#graph-arrow)"
+                >
+                  <title>
+                    {compactGraphLabel(edge.source)} → {humanize(edge.relationship)} →{" "}
+                    {compactGraphLabel(edge.target)}
+                  </title>
+                </path>
+              );
+            })}
+          </g>
+          <g className="visual-nodes">
+            {graph.nodes.map((node) => (
+              <g
+                key={node.id}
+                className={`visual-node node-${node.kind}`}
+                transform={`translate(${node.x - 54}, ${node.y - 17})`}
+                tabIndex={0}
+              >
+                <title>
+                  {compactGraphLabel(node.id)} ({node.kind})
+                </title>
+                <rect width="108" height="34" rx="10" filter="url(#graph-node-shadow)" />
+                <circle cx="13" cy="17" r="4" />
+                <text x="23" y="20">
+                  {compactGraphLabel(node.id)}
+                </text>
+              </g>
+            ))}
+          </g>
+        </svg>
+      </div>
+      <div className="graph-legend" aria-label="Graph node legend">
+        <span className="control"><i />Plan control</span>
+        <span className="person"><i />Person</span>
+        <span className="event"><i />Observed event</span>
+        <span className="asset"><i />Asset</span>
+        <span className="zone"><i />Zone / state</span>
+      </div>
+      <div className="graph-caption">
+        <span>
+          Showing <b>{graph.nodes.length}</b> of {graph.totalNodes} nodes
+        </span>
+        <span>
+          <b>{graph.edges.length}</b> connected edges
+        </span>
+        <span>Hover nodes and edges for details</span>
+      </div>
     </div>
   );
 }

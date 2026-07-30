@@ -212,6 +212,14 @@ def test_graph_diff_is_deterministic_and_never_equates_absence_to_failure():
     assert all(query.readonly for query in queries)
 
 
+def test_prohibited_zone_diff_orders_by_projected_alias_after_aggregation():
+    prohibited = Neo4jService.build_graph_diff_queries("CASE-1")[1].text
+    assert "collect(DISTINCT clip.id) AS evidence_clip_ids" in prohibited
+    assert "event.global_start_ms AS event_start_ms" in prohibited
+    assert "ORDER BY step_order, event_start_ms" in prohibited
+    assert "ORDER BY step.step_order, event.global_start_ms" not in prohibited
+
+
 def test_findings_require_evidence_except_unverifiable():
     with pytest.raises(ValueError, match="evidence_clip_ids"):
         Neo4jService.build_findings_query(

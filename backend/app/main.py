@@ -36,6 +36,7 @@ from .services.neo4j_service import Neo4jService
 from .services.openai_service import OpenAIService
 from .services.twelvelabs_service import TwelveLabsService
 from .store import CaseNotFoundError, case_store
+from .task_registry import InvestigationTaskRegistry
 
 
 neo4j_service = Neo4jService(
@@ -53,6 +54,10 @@ pipeline = InvestigationPipeline(
     twelvelabs=twelvelabs_service,
     aws_storage=aws_service,
 )
+investigation_tasks = InvestigationTaskRegistry(
+    pipeline=pipeline,
+    store=case_store,
+)
 
 
 @asynccontextmanager
@@ -60,6 +65,7 @@ async def lifespan(_: FastAPI):
     if neo4j_service.configured:
         await neo4j_service.initialize_schema()
     yield
+    await investigation_tasks.shutdown()
     await neo4j_service.close()
 
 
@@ -246,23 +252,14 @@ async def get_case(case_id: str) -> CaseRecord:
     return _case_or_404(case_id)
 
 
-@app.post("/cases/{case_id}/investigate", response_model=CaseRecord)
+@app.post(
+    "/cases/{case_id}/investigate",
+    response_model=CaseRecord,
+    status_code=202,
+)
 async def investigate(case_id: str) -> CaseRecord:
     _case_or_404(case_id)
-    try:
-        return await pipeline.start(case_id)
-    except Exception as exc:
-        record = _case_or_404(case_id)
-        record.status = CaseStatus.FAILED
-        record.error = f"{type(exc).__name__}: {exc}"
-        case_store.save(record)
-        raise HTTPException(
-            status_code=502,
-            detail={
-                "message": "Investigation pipeline failed",
-                "stage_error": record.error,
-            },
-        ) from exc
+    return await investigation_tasks.start(case_id)
 
 
 @app.post("/cases/{case_id}/approve", response_model=CaseRecord)
