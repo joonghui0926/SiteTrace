@@ -533,9 +533,16 @@ function New-CodeZipPackage {
             "uncompressed service limit."
         )
     }
-    Compress-Archive -Path (Join-Path $packageRoot "*") `
-        -DestinationPath $zipPath `
-        -CompressionLevel Optimal
+    # Windows PowerShell's Compress-Archive becomes extremely slow for Python
+    # dependency trees with thousands of small files. The framework ZIP API
+    # produces the same standard archive in a fraction of the time.
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    [System.IO.Compression.ZipFile]::CreateFromDirectory(
+        $packageRoot,
+        $zipPath,
+        [System.IO.Compression.CompressionLevel]::Optimal,
+        $false
+    )
 
     return [pscustomobject]@{
         Path = $zipPath
@@ -914,10 +921,6 @@ function Deploy-AgentCoreCodeZip {
             $createRequest = [ordered]@{
                 agentRuntimeName = $RuntimeName
                 clientToken = ([Guid]::NewGuid().ToString())
-                tags = @{
-                    Project = "SiteTrace"
-                    Lifecycle = "WorkshopTemporary"
-                }
             } + $runtimeConfiguration
             $requestPath = Save-TemporaryJson `
                 -Value $createRequest `
@@ -941,24 +944,62 @@ function Deploy-AgentCoreCodeZip {
 
         $runtime = Wait-RuntimeReady -RuntimeId $runtime.agentRuntimeId
         $endpoint = Get-Endpoint -RuntimeId $runtime.agentRuntimeId
+        $mustCreateEndpoint = -not $endpoint
         if ($endpoint) {
             if ($PSCmdlet.ShouldProcess(
                 "$($runtime.agentRuntimeId)/$EndpointName",
                 "Point endpoint at runtime version $($runtime.agentRuntimeVersion)"
             )) {
-                [void](Invoke-AwsText -Arguments @(
-                    "bedrock-agentcore-control",
-                    "update-agent-runtime-endpoint",
-                    "--agent-runtime-id", $runtime.agentRuntimeId,
-                    "--endpoint-name", $EndpointName,
-                    "--agent-runtime-version", $runtime.agentRuntimeVersion,
-                    "--client-token", ([Guid]::NewGuid().ToString()),
-                    "--description", "Temporary SiteTrace workshop endpoint",
-                    "--output", "json"
-                ))
+                try {
+                    [void](Invoke-AwsText -Arguments @(
+                        "bedrock-agentcore-control",
+                        "update-agent-runtime-endpoint",
+                        "--agent-runtime-id", $runtime.agentRuntimeId,
+                        "--endpoint-name", $EndpointName,
+                        "--agent-runtime-version", $runtime.agentRuntimeVersion,
+                        "--client-token", ([Guid]::NewGuid().ToString()),
+                        "--description", "Temporary SiteTrace workshop endpoint",
+                        "--output", "json"
+                    ))
+                }
+                catch {
+                    if (
+                        $_.Exception.Message -notmatch
+                        "UpdateAgentRuntimeEndpoint|AccessDenied"
+                    ) {
+                        throw
+                    }
+                    Write-Warning (
+                        "The Workshop role cannot update an existing AgentCore " +
+                        "endpoint. Recreating only the temporary endpoint."
+                    )
+                    [void](Invoke-AwsText -Arguments @(
+                        "bedrock-agentcore-control",
+                        "delete-agent-runtime-endpoint",
+                        "--agent-runtime-id", $runtime.agentRuntimeId,
+                        "--endpoint-name", $EndpointName,
+                        "--output", "json"
+                    ))
+                    $endpointDeadline = (Get-Date).AddMinutes(3)
+                    do {
+                        Start-Sleep -Seconds 5
+                        $endpoint = Get-Endpoint `
+                            -RuntimeId $runtime.agentRuntimeId
+                    } while (
+                        $endpoint -and
+                        (Get-Date) -lt $endpointDeadline
+                    )
+                    if ($endpoint) {
+                        throw (
+                            "The temporary endpoint did not finish deleting " +
+                            "before its replacement was requested."
+                        )
+                    }
+                    $mustCreateEndpoint = $true
+                }
             }
         }
-        else {
+        if ($mustCreateEndpoint) {
             if ($PSCmdlet.ShouldProcess(
                 "$($runtime.agentRuntimeId)/$EndpointName",
                 "Create endpoint for runtime version $($runtime.agentRuntimeVersion)"
@@ -971,8 +1012,6 @@ function Deploy-AgentCoreCodeZip {
                     "--agent-runtime-version", $runtime.agentRuntimeVersion,
                     "--client-token", ([Guid]::NewGuid().ToString()),
                     "--description", "Temporary SiteTrace workshop endpoint",
-                    "--tags",
-                    "Project=SiteTrace,Lifecycle=WorkshopTemporary",
                     "--output", "json"
                 ))
             }

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -15,6 +16,7 @@ from fastapi import (
     File,
     Form,
     HTTPException,
+    Request,
     UploadFile,
 )
 from fastapi.middleware.cors import CORSMiddleware
@@ -343,9 +345,24 @@ async def report(case_id: str) -> FileResponse:
 
 
 @app.post("/invocations")
-async def agentcore_invocation(payload: dict[str, Any]) -> dict[str, Any]:
+async def agentcore_invocation(request: Request) -> dict[str, Any]:
     """AgentCore-compatible JSON adapter for non-multipart workflow actions."""
 
+    # AgentCore forwards invocation payloads as opaque bytes. FastAPI's normal
+    # dict body binding rejects valid JSON when the proxy uses
+    # application/octet-stream, so decode explicitly and validate the object.
+    try:
+        payload = json.loads((await request.body()).decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="Invocation payload must be a UTF-8 JSON object",
+        ) from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(
+            status_code=400,
+            detail="Invocation payload must be a JSON object",
+        )
     action = str(payload.get("action", "health"))
     if action == "health":
         return (await health()).model_dump(mode="json")
