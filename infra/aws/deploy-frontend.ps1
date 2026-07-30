@@ -42,8 +42,7 @@ param(
     [ValidatePattern("^[A-Za-z0-9-]{1,255}$")]
     [string]$AppName = "sitetrace-workshop",
 
-    [ValidatePattern("^[A-Za-z0-9._/-]{1,255}$")]
-    [string]$BranchName = "main",
+    [string]$BranchName,
 
     [string]$AppId,
     [string]$RepositoryUrl = "https://github.com/joonghui0926/SiteTrace",
@@ -61,9 +60,41 @@ $env:AWS_PAGER = ""
 
 $repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 $buildSpecPath = Join-Path $repositoryRoot "amplify.yml"
+$awsCommand = Get-Command "aws" -ErrorAction SilentlyContinue
+if ($awsCommand) {
+    $script:AwsExecutable = $awsCommand.Source
+}
+else {
+    $standardAwsPaths = @(
+        "C:\Program Files\Amazon\AWSCLIV2\aws.exe",
+        "C:\Program Files (x86)\Amazon\AWSCLIV2\aws.exe"
+    )
+    $script:AwsExecutable = $standardAwsPaths |
+        Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+        Select-Object -First 1
+}
+
+if (-not $BranchName) {
+    $git = Get-Command "git" -ErrorAction SilentlyContinue
+    if ($git) {
+        $detectedBranch = & git -C $repositoryRoot branch --show-current 2>$null
+        if ($LASTEXITCODE -eq 0 -and $detectedBranch) {
+            $BranchName = ($detectedBranch | Select-Object -First 1).Trim()
+        }
+    }
+    if (-not $BranchName) {
+        $BranchName = "main"
+    }
+}
+if ($BranchName -notmatch "^[A-Za-z0-9._/-]{1,255}$") {
+    throw "-BranchName contains unsupported characters."
+}
 
 function Write-Plan {
     Write-Host "SiteTrace Amplify temporary deployment plan"
+    Write-Host "  AWS CLI            : $(
+        if ($script:AwsExecutable) { $script:AwsExecutable } else { "not found" }
+    )"
     Write-Host "  AWS profile/region : $Profile / $Region"
     Write-Host "  App/branch         : $AppName / $BranchName"
     Write-Host "  Repository         : $RepositoryUrl"
@@ -81,6 +112,9 @@ function Write-Plan {
 
 function Assert-Command {
     param([Parameter(Mandatory = $true)][string]$Name)
+    if ($Name -eq "aws" -and $script:AwsExecutable) {
+        return
+    }
     if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) {
         throw "Required command '$Name' was not found on PATH."
     }
@@ -97,8 +131,21 @@ function Invoke-AwsText {
         "--region", $Region,
         "--no-cli-pager"
     )
-    $output = & aws @allArguments 2>&1
-    $exitCode = $LASTEXITCODE
+    if (-not $script:AwsExecutable) {
+        throw (
+            "AWS CLI was not found on PATH or under " +
+            "'C:\Program Files\Amazon\AWSCLIV2'."
+        )
+    }
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $output = & $script:AwsExecutable @allArguments 2>&1
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
     $text = ($output | Out-String).Trim()
     if ($exitCode -ne 0 -and -not $AllowFailure) {
         throw "AWS CLI failed (exit $exitCode): $text"

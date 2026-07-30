@@ -26,6 +26,7 @@ from .config import settings
 from .schemas import (
     CaseRecord,
     CaseStatus,
+    CitedNarrativeClaim,
     CorrectiveAction,
     DeviationFinding,
     EvidenceClip,
@@ -34,6 +35,7 @@ from .schemas import (
     ObservedEvent,
     PlannedStep,
 )
+from .services.aws_service import AWSStorageService
 from .services.neo4j_service import Neo4jService
 from .services.openai_service import (
     EventStepMappingBatch,
@@ -123,6 +125,14 @@ def _epoch_ms(value: Any) -> int | None:
         return None
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _closest_clip(
     candidate: Mapping[str, Any],
     clips: list[EvidenceClip],
@@ -183,6 +193,7 @@ class InvestigationPipeline:
         openai: OpenAIService | None = None,
         twelvelabs: TwelveLabsService | None = None,
         neo4j: Neo4jService | None = None,
+        aws_storage: AWSStorageService | None = None,
     ) -> None:
         self.store = store or case_store
         self.openai = openai or OpenAIService()
@@ -193,6 +204,7 @@ class InvestigationPipeline:
             password=settings.neo4j_password,
             database=settings.neo4j_database,
         )
+        self.aws_storage = aws_storage or AWSStorageService()
         self._runtimes: dict[str, SiteTraceStrandsRuntime] = {}
 
     def runtime_for(self, case_id: str) -> SiteTraceStrandsRuntime:
@@ -420,7 +432,18 @@ class InvestigationPipeline:
             ],
         )
         jha, control_lookup = self._neo4j_plan(record, steps)
-        graph_events = self._neo4j_events(events, mappings.data, control_lookup)
+        camera_start_ms = {
+            str(video["camera_id"]).casefold(): _epoch_ms(
+                video.get("recording_started_at")
+            )
+            for video in analyzed["videos"]
+        }
+        graph_events = self._neo4j_events(
+            events,
+            mappings.data,
+            control_lookup,
+            camera_start_ms,
+        )
         graph_videos = await self._neo4j_videos(record, analyzed, clips)
         coverage = [
             {
@@ -607,6 +630,24 @@ class InvestigationPipeline:
             case_id=context.case_id,
             title=narrative.data.title,
             incident_summary=summary,
+            incident_overview=[
+                CitedNarrativeClaim.model_validate(
+                    claim.model_dump(mode="json")
+                )
+                for claim in narrative.data.incident_overview
+            ],
+            event_timeline=[
+                CitedNarrativeClaim.model_validate(
+                    claim.model_dump(mode="json")
+                )
+                for claim in narrative.data.event_timeline
+            ],
+            deviation_summary=[
+                CitedNarrativeClaim.model_validate(
+                    claim.model_dump(mode="json")
+                )
+                for claim in narrative.data.deviation_summary
+            ],
             planned_steps=steps,
             events=events,
             evidence_clips=[
@@ -687,10 +728,17 @@ class InvestigationPipeline:
             output_directory=settings.report_directory,
         )
         record.report_path = str(report_path)
+        record.report_s3_uri = await asyncio.to_thread(
+            self.aws_storage.upload_file,
+            Path(report_path),
+            key=f"cases/{context.case_id}/reports/{Path(report_path).name}",
+            content_type="application/pdf",
+        )
         record.status = CaseStatus.COMPLETED
         self.store.save(record)
         return {
             "report_path": str(report_path),
+            "report_s3_uri": record.report_s3_uri,
             "published": True,
         }
 
@@ -756,7 +804,9 @@ class InvestigationPipeline:
         events: list[ObservedEvent],
         mappings: EventStepMappingBatch,
         control_lookup: dict[tuple[str, str], str],
+        camera_start_ms: Mapping[str, int | None] | None = None,
     ) -> list[dict[str, Any]]:
+        camera_start_ms = camera_start_ms or {}
         by_event = {mapping.event_id: mapping for mapping in mappings.mappings}
         output: list[dict[str, Any]] = []
         by_camera: dict[str, list[ObservedEvent]] = defaultdict(list)
@@ -767,8 +817,25 @@ class InvestigationPipeline:
             ordered = sorted(camera_events, key=lambda value: value.start_sec)
             for first, second in zip(ordered, ordered[1:]):
                 next_by_event[first.event_id].append(second.event_id)
+        events_with_absolute_time = [
+            (
+                camera_start_ms.get(event.camera_id.casefold())
+                + int(event.start_sec * 1000),
+                event,
+            )
+            for event in events
+            if camera_start_ms.get(event.camera_id.casefold()) is not None
+        ]
+        events_with_absolute_time.sort(key=lambda item: item[0])
+        for (_, first), (_, second) in zip(
+            events_with_absolute_time,
+            events_with_absolute_time[1:],
+        ):
+            if second.event_id not in next_by_event[first.event_id]:
+                next_by_event[first.event_id].append(second.event_id)
         for event in events:
             mapping = by_event.get(event.event_id)
+            recording_start = camera_start_ms.get(event.camera_id.casefold())
             step_ids = mapping.matched_step_ids if mapping else []
             satisfied = []
             if mapping:
@@ -812,8 +879,16 @@ class InvestigationPipeline:
                         else "INFERRED"
                     ),
                     "confidence": event.confidence,
-                    "global_start_ms": None,
-                    "global_end_ms": None,
+                    "global_start_ms": (
+                        recording_start + int(event.start_sec * 1000)
+                        if recording_start is not None
+                        else None
+                    ),
+                    "global_end_ms": (
+                        recording_start + int(event.end_sec * 1000)
+                        if recording_start is not None
+                        else None
+                    ),
                     "evidence_clip_ids": event.evidence_clip_ids,
                     "segment_ids": [
                         _identifier("SEGMENT", clip_id)
@@ -825,7 +900,11 @@ class InvestigationPipeline:
                     "blocked_zone_ids": blocked,
                     "entities": entities,
                     "precedes_event_ids": next_by_event[event.event_id],
-                    "sequence_basis": "same-camera timestamp",
+                    "sequence_basis": (
+                        "camera metadata absolute timestamp"
+                        if recording_start is not None
+                        else "same-camera relative timestamp"
+                    ),
                     "sequence_confidence": 1.0,
                 }
             )
@@ -902,9 +981,10 @@ class InvestigationPipeline:
                 )
             digest = ""
             if source.local_path and Path(source.local_path).exists():
-                digest = hashlib.sha256(
-                    Path(source.local_path).read_bytes()
-                ).hexdigest()
+                digest = await asyncio.to_thread(
+                    _sha256_file,
+                    Path(source.local_path),
+                )
             output.append(
                 {
                     "video": {

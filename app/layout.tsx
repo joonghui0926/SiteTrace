@@ -31,6 +31,21 @@ export const metadata: Metadata = {
     description:
       "From source footage and approved plans to one auditable safety investigation.",
     type: "website",
+    images: [
+      {
+        url: "/og.png",
+        width: 1200,
+        height: 630,
+        alt: "SiteTrace evidence-backed incident investigations",
+      },
+    ],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "SiteTrace",
+    description:
+      "From source footage and approved plans to one auditable safety investigation.",
+    images: ["/og.png"],
   },
 };
 

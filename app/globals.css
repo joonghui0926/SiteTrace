@@ -10,7 +10,7 @@
   --ink: #191f28;
   --body: #333d4b;
   --muted: #6b7684;
-  --quiet: #8b95a1;
+  --quiet: #66717f;
   --line: #e5e8eb;
   --line-strong: #d6dce1;
   --surface: #f7f8fa;
@@ -61,9 +61,23 @@ button {
 button:focus-visible,
 a:focus-visible,
 input:focus-visible,
-label:has(input:focus-visible) {
+label:has(input:focus-visible),
+.upload-field:has(input[type="file"]:focus-visible),
+.phase-list:focus-visible {
   outline: 3px solid rgba(115, 197, 128, 0.38);
   outline-offset: 3px;
+}
+
+.sr-only {
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  position: absolute;
+  overflow: hidden;
+  border: 0;
+  clip: rect(0, 0, 0, 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 .site-shell {
@@ -258,7 +272,7 @@ label:has(input:focus-visible) {
 
 .title-field input::placeholder,
 .approval-panel input::placeholder {
-  color: #a5adb7;
+  color: var(--quiet);
 }
 
 .title-field input:hover:not(:disabled),
@@ -297,6 +311,11 @@ label:has(input:focus-visible) {
 .upload-field:first-child,
 .upload-field:nth-child(2) {
   min-height: 154px;
+}
+
+.upload-field:last-child:nth-child(odd) {
+  grid-column: 1 / -1;
+  min-height: 112px;
 }
 
 .upload-field.selected {
@@ -474,6 +493,10 @@ label:has(input:focus-visible) {
   display: grid;
   grid-template-columns: repeat(9, minmax(0, 1fr));
   list-style: none;
+}
+
+.phase-list:focus-visible {
+  border-radius: 4px;
 }
 
 .phase-list li {
@@ -843,7 +866,7 @@ label:has(input:focus-visible) {
   border-radius: 999px;
   background: var(--surface);
   color: var(--muted);
-  font-size: 8px;
+  font-size: 9px;
   font-weight: 720;
   white-space: nowrap;
 }
@@ -1103,7 +1126,7 @@ label:has(input:focus-visible) {
 .control-lines b {
   margin-right: 6px;
   color: var(--quiet);
-  font-size: 8px;
+  font-size: 9px;
   text-transform: uppercase;
 }
 
@@ -1146,7 +1169,7 @@ label:has(input:focus-visible) {
 
 .finding-title > span {
   color: var(--danger);
-  font-size: 8px;
+  font-size: 9px;
   font-weight: 760;
   text-transform: uppercase;
 }
@@ -1184,7 +1207,7 @@ label:has(input:focus-visible) {
 .finding-comparison span,
 .citation-row > span {
   color: var(--quiet);
-  font-size: 8px;
+  font-size: 9px;
   font-weight: 730;
   text-transform: uppercase;
 }
@@ -1277,7 +1300,7 @@ label:has(input:focus-visible) {
   display: block;
   margin-bottom: 5px;
   color: var(--green-deep);
-  font-size: 8px;
+  font-size: 9px;
   font-weight: 740;
 }
 
@@ -1295,7 +1318,7 @@ label:has(input:focus-visible) {
 
 .graph-path > div span {
   overflow-wrap: anywhere;
-  font-size: 8px;
+  font-size: 9px;
   line-height: 1.35;
 }
 
@@ -1391,7 +1414,7 @@ label:has(input:focus-visible) {
 
 .report-document-header small {
   color: var(--quiet);
-  font-size: 8px;
+  font-size: 9px;
   font-weight: 730;
   text-transform: uppercase;
 }
@@ -1430,6 +1453,22 @@ label:has(input:focus-visible) {
   letter-spacing: -0.025em;
 }
 
+.cited-narrative {
+  display: grid;
+  gap: 20px;
+}
+
+.cited-narrative article {
+  max-width: 760px;
+}
+
+.cited-narrative p {
+  margin: 0;
+  color: var(--body);
+  font-size: 12px;
+  line-height: 1.82;
+}
+
 .report-findings {
   border-top: 1px solid var(--line);
 }
@@ -1450,7 +1489,7 @@ label:has(input:focus-visible) {
 
 .report-findings small {
   color: var(--green-deep);
-  font-size: 8px;
+  font-size: 9px;
   font-weight: 740;
   text-transform: uppercase;
 }
@@ -1499,7 +1538,7 @@ label:has(input:focus-visible) {
 .action-list span,
 .action-list small {
   color: var(--green-deep);
-  font-size: 8px;
+  font-size: 9px;
   font-weight: 740;
   text-transform: uppercase;
 }
@@ -1581,7 +1620,7 @@ label:has(input:focus-visible) {
 
 .annex-list span {
   color: var(--green-deep);
-  font-size: 8px;
+  font-size: 9px;
   font-weight: 740;
 }
 
@@ -1594,7 +1633,7 @@ label:has(input:focus-visible) {
 .annex-list small {
   margin-top: auto;
   color: var(--quiet);
-  font-size: 8px;
+  font-size: 9px;
 }
 
 .trace-list {
@@ -1676,6 +1715,11 @@ label:has(input:focus-visible) {
   margin: 0;
   flex: 0 0 auto;
   accent-color: var(--green-deep);
+}
+
+.approval-error {
+  margin: 0 0 18px;
+  align-items: flex-start;
 }
 
 .full-width,
@@ -1812,6 +1856,10 @@ label:has(input:focus-visible) {
 
   .upload-grid {
     grid-template-columns: 1fr;
+  }
+
+  .upload-field:last-child:nth-child(odd) {
+    grid-column: auto;
   }
 
   .phase-section {

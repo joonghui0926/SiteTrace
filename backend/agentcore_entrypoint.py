@@ -224,4 +224,26 @@ if __name__ == "__main__":  # pragma: no cover - local container smoke test.
     )
 
 
-__all__ = ["app", "load_runtime_secrets"]
+_mangum_handler: Any | None = None
+
+
+def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
+    """AWS Lambda HTTP API adapter used by the optional browser REST plan.
+
+    ``mangum`` is deliberately an optional packaging dependency so the normal
+    FastAPI container and local environment do not need another runtime layer.
+    """
+
+    global _mangum_handler
+    if _mangum_handler is None:
+        try:
+            from mangum import Mangum
+        except ImportError as exc:  # pragma: no cover - Lambda package guard.
+            raise RuntimeError(
+                "The Lambda deployment package must include mangum"
+            ) from exc
+        _mangum_handler = Mangum(app, lifespan="off")
+    return _mangum_handler(event, context)
+
+
+__all__ = ["app", "lambda_handler", "load_runtime_secrets"]

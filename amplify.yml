@@ -6,6 +6,12 @@ frontend:
         - nvm install 22
         - nvm use 22
         - npm ci
+        # The source tree also supports Cloudflare/Vinext development. Generate
+        # the virtual cloudflare:workers and D1 declarations that Next's
+        # repository-wide type check sees, even though Amplify does not execute
+        # that adapter.
+        - node -e "require('fs').writeFileSync('.amplify-wrangler.json', JSON.stringify({name:'sitetrace-amplify-types',compatibility_date:'2026-05-15',main:'worker/index.ts',d1_databases:[{binding:'DB',database_name:'type-only',database_id:'00000000-0000-4000-8000-000000000000'}]}))"
+        - npx --no-install wrangler types --config .amplify-wrangler.json worker-configuration.d.ts
     build:
       commands:
         # Amplify Hosting supports the standard Next.js build output. Local

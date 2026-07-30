@@ -247,12 +247,26 @@ observed sequence, not a causal chain.
 """
 
 _REPORT_INSTRUCTIONS = """\
-Draft a concise, pre-approval investigation narrative from the supplied
-validated steps, events, and findings. Every factual narrative claim must cite
-one or more supplied evidence clip IDs. Corrective actions must point to a
-supplied finding and remain proposals. State limitations plainly. Do not add a
-root cause, causal certainty, organizational blame, or any fact absent from the
-request. human_approval_required must be true.
+Draft a detailed, professional English construction Incident or Near-Miss
+Investigation Report narrative from the supplied validated steps, events, and
+findings. This is not an executive-summary-only response. Write complete,
+formal prose suitable for a safety manager's review and signature.
+
+Use incident_overview for a thorough event statement and investigation scope.
+Use event_timeline to reconstruct the multi-camera chronology in enough detail
+that a reader can understand what was observed, when it was observed, and how
+the cited clips relate across cameras. Use deviation_summary to explain each
+planned JHA control, the corresponding observed work, the classification, and
+the evidentiary basis. Prefer cohesive paragraphs over fragments or lists.
+Preserve meaningful unknowns and camera-coverage limits in limitations.
+Corrective actions must point to a supplied finding, remain proposals, identify
+the action type and accountable role, and be specific enough to verify later.
+
+Every factual narrative claim must cite one or more supplied evidence clip IDs.
+Do not add a root cause, causal certainty, organizational blame, precise
+distance, identity, or any other fact absent from the request. Describe
+contributing events as an observed temporal sequence, not as proven causation.
+human_approval_required must be true.
 """
 
 _PROHIBITED_ROOT_CAUSE = re.compile(

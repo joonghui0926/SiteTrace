@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from ..config import settings
 
@@ -58,6 +59,20 @@ class AWSStorageService:
         self.s3.upload_file(**kwargs)
         return f"s3://{settings.sitetrace_s3_bucket}/{key}"
 
+    def download_uri(self, uri: str, destination: Path) -> Path:
+        if not self.available:
+            raise RuntimeError("S3 storage is not configured")
+        parsed = urlparse(uri)
+        if parsed.scheme != "s3" or not parsed.netloc or not parsed.path:
+            raise ValueError("Expected an s3://bucket/key URI")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        self.s3.download_file(
+            Bucket=parsed.netloc,
+            Key=parsed.path.lstrip("/"),
+            Filename=str(destination),
+        )
+        return destination
+
     def health(self) -> dict[str, Any]:
         if not self.available:
             return {
@@ -82,4 +97,3 @@ class AWSStorageService:
                 "region": settings.aws_region,
                 "error": type(exc).__name__,
             }
-

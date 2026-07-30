@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import {
   ChangeEvent,
   FormEvent,
@@ -90,10 +91,20 @@ type CorrectiveAction = {
 
 type SponsorTraceEntry = Record<string, unknown>;
 
+type CitedNarrativeClaim = {
+  claim_id: string;
+  text: string;
+  evidence_clip_ids: string[];
+  finding_ids: string[];
+};
+
 type Investigation = {
   case_id: string;
   title: string;
   incident_summary: string;
+  incident_overview?: CitedNarrativeClaim[];
+  event_timeline?: CitedNarrativeClaim[];
+  deviation_summary?: CitedNarrativeClaim[];
   planned_steps: PlannedStep[];
   events: ObservedEvent[];
   evidence_clips: EvidenceClip[];
@@ -115,6 +126,7 @@ type CaseRecord = {
   approved_by?: string | null;
   approved_at?: string | null;
   report_path?: string | null;
+  report_s3_uri?: string | null;
   error?: string | null;
 };
 
@@ -157,11 +169,20 @@ async function responseError(response: Response) {
   const fallback = `Request failed with status ${response.status}.`;
   try {
     const payload = (await response.json()) as {
-      detail?: string;
+      detail?: unknown;
       error?: string;
       message?: string;
     };
-    return payload.detail ?? payload.error ?? payload.message ?? fallback;
+    if (typeof payload.detail === "string") return payload.detail;
+    if (
+      payload.detail &&
+      typeof payload.detail === "object" &&
+      "message" in payload.detail &&
+      typeof payload.detail.message === "string"
+    ) {
+      return payload.detail.message;
+    }
+    return payload.error ?? payload.message ?? fallback;
   } catch {
     const message = await response.text().catch(() => "");
     return message || fallback;
@@ -265,6 +286,12 @@ function statusLabel(status: CaseStatus) {
   return humanize(status);
 }
 
+function preferredScrollBehavior(): ScrollBehavior {
+  return window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    ? "auto"
+    : "smooth";
+}
+
 function isCaseRecord(value: unknown): value is CaseRecord {
   return Boolean(
     value &&
@@ -289,6 +316,7 @@ export function SiteTraceApp() {
   const [activeClipId, setActiveClipId] = useState<string | null>(null);
   const [reviewer, setReviewer] = useState("");
   const [reviewConfirmed, setReviewConfirmed] = useState(false);
+  const [approvalError, setApprovalError] = useState<string | null>(null);
   const [approvedLocally, setApprovedLocally] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -332,20 +360,6 @@ export function SiteTraceApp() {
     return () => abortRef.current?.abort();
   }, []);
 
-  useEffect(() => {
-    if (!investigation) return;
-    const firstEvent = [...investigation.events].sort(
-      (left, right) => left.start_sec - right.start_sec,
-    )[0];
-    setActiveEventId(firstEvent?.event_id ?? null);
-    setActiveClipId(
-      firstEvent?.evidence_clip_ids[0] ??
-        investigation.evidence_clips[0]?.evidence_clip_id ??
-        null,
-    );
-    setActiveView("evidence");
-  }, [investigation?.case_id, investigation?.generated_at]);
-
   const activePhase = useMemo(() => {
     if (investigation) return investigationPhases.length;
     if (runState === "uploading") return 0;
@@ -372,7 +386,9 @@ export function SiteTraceApp() {
   }
 
   function validateUpload() {
-    if (!title.trim()) return "Give this investigation a clear title.";
+    if (title.trim().length < 3) {
+      return "Give this investigation a title with at least three characters.";
+    }
     if (!jha) return "Add the approved JHA PDF.";
     if (!jha.name.toLowerCase().endsWith(".pdf")) {
       return "The approved JHA must be a PDF.";
@@ -467,17 +483,31 @@ export function SiteTraceApp() {
           investigated.error || "The investigation could not be completed.",
         );
       }
-      if (!investigated.investigation) {
+      const completedInvestigation = investigated.investigation;
+      if (!completedInvestigation) {
         throw new Error(
           "The case completed without an investigation package.",
         );
       }
       setCaseRecord(investigated);
+      const firstEvent = [...completedInvestigation.events].sort(
+        (left, right) => left.start_sec - right.start_sec,
+      )[0];
+      setActiveEventId(firstEvent?.event_id ?? null);
+      setActiveClipId(
+        firstEvent?.evidence_clip_ids[0] ??
+          completedInvestigation.evidence_clips[0]?.evidence_clip_id ??
+          null,
+      );
+      setActiveView("evidence");
       setRunState("ready");
       window.requestAnimationFrame(() => {
-        document
-          .getElementById("investigation-workspace")
-          ?.scrollIntoView({ behavior: "smooth", block: "start" });
+        const workspace = document.getElementById("investigation-workspace");
+        workspace?.focus({ preventScroll: true });
+        workspace?.scrollIntoView({
+          behavior: preferredScrollBehavior(),
+          block: "start",
+        });
       });
     } catch (requestFailure) {
       if (
@@ -510,16 +540,19 @@ export function SiteTraceApp() {
     setActiveClipId(clipId);
     setActiveView("evidence");
     window.requestAnimationFrame(() => {
-      document
-        .getElementById("workspace-content")
-        ?.scrollIntoView({ behavior: "smooth", block: "start" });
+      const content = document.getElementById("workspace-content");
+      content?.focus({ preventScroll: true });
+      content?.scrollIntoView({
+        behavior: preferredScrollBehavior(),
+        block: "start",
+      });
     });
   }
 
   async function approveReport() {
     if (!caseRecord || !reviewConfirmed || !reviewer.trim() || busy) return;
     setRunState("approving");
-    setError(null);
+    setApprovalError(null);
     try {
       const approval = await requestJson<unknown>(
         apiBase,
@@ -542,7 +575,7 @@ export function SiteTraceApp() {
       setApprovedLocally(true);
       setRunState("ready");
     } catch (approvalFailure) {
-      setError(
+      setApprovalError(
         approvalFailure instanceof Error
           ? approvalFailure.message
           : "Approval could not be recorded.",
@@ -568,15 +601,26 @@ export function SiteTraceApp() {
     setActiveClipId(null);
     setReviewer("");
     setReviewConfirmed(false);
+    setApprovalError(null);
     setApprovedLocally(false);
-    window.scrollTo({ top: 0, behavior: "smooth" });
+    window.requestAnimationFrame(() => {
+      const titleInput = document.getElementById("investigation-title");
+      titleInput?.focus({ preventScroll: true });
+      window.scrollTo({ top: 0, behavior: preferredScrollBehavior() });
+    });
   }
 
   return (
     <main className="site-shell">
       <header className="site-header">
         <a className="brand" href="#top" aria-label="SiteTrace home">
-          <img src="/sitetrace-logo.png" alt="" />
+          <Image
+            src="/sitetrace-logo.png"
+            alt=""
+            width={36}
+            height={36}
+            priority
+          />
           <span>SiteTrace</span>
         </a>
         {caseRecord ? (
@@ -593,7 +637,11 @@ export function SiteTraceApp() {
           onClick={resetWorkspace}
           disabled={busy && runState !== "investigating"}
         >
-          {caseRecord ? "New investigation" : "Clear files"}
+          {runState === "investigating"
+            ? "Cancel investigation"
+            : caseRecord
+              ? "New investigation"
+              : "Clear files"}
         </button>
       </header>
 
@@ -615,6 +663,7 @@ export function SiteTraceApp() {
         className="upload-panel"
         onSubmit={submitInvestigation}
         aria-labelledby="upload-title"
+        aria-busy={runState === "uploading" || runState === "investigating"}
       >
         <div className="upload-intro">
           <div>
@@ -627,13 +676,15 @@ export function SiteTraceApp() {
           </p>
         </div>
 
-        <label className="title-field">
+        <label className="title-field" htmlFor="investigation-title">
           <span>Investigation title</span>
           <input
+            id="investigation-title"
             type="text"
             value={title}
             onChange={(event) => setTitle(event.target.value)}
             placeholder="Name the event or issue under review"
+            minLength={3}
             maxLength={160}
             required
             disabled={busy}
@@ -769,7 +820,7 @@ export function SiteTraceApp() {
         <div className="section-kicker">
           <p className="step-label">02 · Evidence workflow</p>
           <h2 id="phase-title">Nine bounded phases, one audit trail</h2>
-          <span>
+          <span role="status" aria-live="polite" aria-atomic="true">
             {runState === "investigating"
               ? "Processing"
               : investigation
@@ -777,7 +828,11 @@ export function SiteTraceApp() {
                 : "Waiting for source files"}
           </span>
         </div>
-        <ol className="phase-list">
+        <ol
+          className="phase-list"
+          aria-label="Investigation phases"
+          tabIndex={0}
+        >
           {investigationPhases.map((phase, index) => {
             const state =
               activePhase > index
@@ -786,7 +841,11 @@ export function SiteTraceApp() {
                   ? "active"
                   : "pending";
             return (
-              <li className={state} key={phase.label}>
+              <li
+                className={state}
+                key={phase.label}
+                aria-current={state === "active" ? "step" : undefined}
+              >
                 <span className="phase-number">
                   {state === "complete" ? "✓" : String(index + 1).padStart(2, "0")}
                 </span>
@@ -817,6 +876,7 @@ export function SiteTraceApp() {
           reviewConfirmed={reviewConfirmed}
           setReviewConfirmed={setReviewConfirmed}
           approveReport={approveReport}
+          approvalError={approvalError}
           approved={approved}
           approving={runState === "approving"}
         />
@@ -875,7 +935,7 @@ function UploadField({
       <div>
         <label htmlFor={id}>
           {label}
-          {required && <span aria-label="required"> *</span>}
+          {required && <span aria-hidden="true"> *</span>}
         </label>
         <small>{hint}</small>
       </div>
@@ -906,6 +966,7 @@ function InvestigationWorkspace({
   reviewConfirmed,
   setReviewConfirmed,
   approveReport,
+  approvalError,
   approved,
   approving,
 }: {
@@ -926,6 +987,7 @@ function InvestigationWorkspace({
   reviewConfirmed: boolean;
   setReviewConfirmed: (value: boolean) => void;
   approveReport: () => void;
+  approvalError: string | null;
   approved: boolean;
   approving: boolean;
 }) {
@@ -936,6 +998,7 @@ function InvestigationWorkspace({
       className="workspace"
       id="investigation-workspace"
       aria-labelledby="workspace-title"
+      tabIndex={-1}
     >
       <header className="workspace-header">
         <div>
@@ -970,6 +1033,7 @@ function InvestigationWorkspace({
           type="button"
           className={activeView === "evidence" ? "active" : ""}
           onClick={() => setActiveView("evidence")}
+          aria-pressed={activeView === "evidence"}
         >
           Evidence timeline
         </button>
@@ -977,6 +1041,7 @@ function InvestigationWorkspace({
           type="button"
           className={activeView === "comparison" ? "active" : ""}
           onClick={() => setActiveView("comparison")}
+          aria-pressed={activeView === "comparison"}
         >
           Plan vs. observed
         </button>
@@ -984,13 +1049,19 @@ function InvestigationWorkspace({
           type="button"
           className={activeView === "report" ? "active" : ""}
           onClick={() => setActiveView("report")}
+          aria-pressed={activeView === "report"}
         >
           Report & approval
-          {approved && <i aria-label="Approved" />}
+          {approved && (
+            <>
+              <i aria-hidden="true" />
+              <span className="sr-only">Approved</span>
+            </>
+          )}
         </button>
       </nav>
 
-      <div id="workspace-content">
+      <div id="workspace-content" tabIndex={-1}>
         {activeView === "evidence" && (
           <EvidenceView
             apiBase={apiBase}
@@ -1023,6 +1094,7 @@ function InvestigationWorkspace({
             reviewConfirmed={reviewConfirmed}
             setReviewConfirmed={setReviewConfirmed}
             approveReport={approveReport}
+            approvalError={approvalError}
             approved={approved}
             approving={approving}
             openEvidence={openEvidence}
@@ -1095,6 +1167,7 @@ function EvidenceView({
                     activeEvent?.event_id === event.event_id ? "active" : ""
                   }
                   onClick={() => chooseEvent(event)}
+                  aria-pressed={activeEvent?.event_id === event.event_id}
                 >
                   <span className="event-index">
                     {String(index + 1).padStart(2, "0")}
@@ -1139,11 +1212,12 @@ function EvidenceView({
                 key={activeClip.evidence_clip_id}
                 controls
                 preload="metadata"
+                aria-label={`Evidence clip ${activeClip.evidence_clip_id}: ${activeClip.summary}`}
                 src={apiUrl(
                   apiBase,
                   `${casePath(caseId)}/evidence/${encodeURIComponent(
                     activeClip.evidence_clip_id,
-                  )}`,
+                  )}#t=${activeClip.start_sec},${activeClip.end_sec}`,
                 )}
               >
                 Your browser does not support video playback.
@@ -1167,6 +1241,7 @@ function EvidenceView({
                       activeClipId === clip.evidence_clip_id ? "active" : ""
                     }
                     onClick={() => setActiveClipId(clip.evidence_clip_id)}
+                    aria-pressed={activeClipId === clip.evidence_clip_id}
                   >
                     {clip.camera_id} · {formatSeconds(clip.start_sec)}
                   </button>
@@ -1457,6 +1532,7 @@ function ReportView({
   reviewConfirmed,
   setReviewConfirmed,
   approveReport,
+  approvalError,
   approved,
   approving,
   openEvidence,
@@ -1469,6 +1545,7 @@ function ReportView({
   reviewConfirmed: boolean;
   setReviewConfirmed: (value: boolean) => void;
   approveReport: () => void;
+  approvalError: string | null;
   approved: boolean;
   approving: boolean;
   openEvidence: (clipId: string) => void;
@@ -1478,7 +1555,12 @@ function ReportView({
       <article className="report-document">
         <header className="report-document-header">
           <div className="brand report-brand">
-            <img src="/sitetrace-logo.png" alt="" />
+            <Image
+              src="/sitetrace-logo.png"
+              alt=""
+              width={30}
+              height={30}
+            />
             <span>SiteTrace</span>
           </div>
           <div>
@@ -1487,13 +1569,40 @@ function ReportView({
           </div>
         </header>
 
-        <div className="report-title">
-          <p className="step-label">Near-miss / incident investigation</p>
-          <h2>{investigation.title}</h2>
-          <p>{investigation.incident_summary}</p>
-        </div>
+            <div className="report-title">
+              <p className="step-label">Near-miss / incident investigation</p>
+              <h2>{investigation.title}</h2>
+              <p>{investigation.incident_summary}</p>
+            </div>
 
-        <ReportSection title="JHA variance review">
+            {!!investigation.incident_overview?.length && (
+              <ReportSection title="Incident statement and scope">
+                <CitedNarrative
+                  claims={investigation.incident_overview}
+                  openEvidence={openEvidence}
+                />
+              </ReportSection>
+            )}
+
+            {!!investigation.event_timeline?.length && (
+              <ReportSection title="Multi-camera chronology">
+                <CitedNarrative
+                  claims={investigation.event_timeline}
+                  openEvidence={openEvidence}
+                />
+              </ReportSection>
+            )}
+
+            {!!investigation.deviation_summary?.length && (
+              <ReportSection title="JHA deviation analysis">
+                <CitedNarrative
+                  claims={investigation.deviation_summary}
+                  openEvidence={openEvidence}
+                />
+              </ReportSection>
+            )}
+
+            <ReportSection title="JHA variance review">
           {investigation.findings.length ? (
             <div className="report-findings">
               {investigation.findings.map((finding, index) => (
@@ -1614,7 +1723,7 @@ function ReportView({
 
       <aside className="approval-panel" aria-labelledby="approval-title">
         <p className="step-label">Human review gate</p>
-        <h3 id="approval-title">
+        <h3 id="approval-title" aria-live="polite">
           {approved ? "Report approved" : "Approve before PDF generation"}
         </h3>
         <p>
@@ -1642,6 +1751,12 @@ function ReportView({
           <span>I reviewed the findings and their cited evidence.</span>
         </label>
 
+        {approvalError && (
+          <div className="error-banner approval-error" role="alert">
+            <span>{approvalError}</span>
+          </div>
+        )}
+
         {!approved ? (
           <button
             className="primary-button full-width"
@@ -1662,6 +1777,7 @@ function ReportView({
             rel="noreferrer"
           >
             Open final PDF
+            <span className="sr-only"> (opens in a new tab)</span>
           </a>
         )}
 
@@ -1700,6 +1816,35 @@ function ReportSection({
       <h3>{title}</h3>
       {children}
     </section>
+  );
+}
+
+function CitedNarrative({
+  claims,
+  openEvidence,
+}: {
+  claims: CitedNarrativeClaim[];
+  openEvidence: (clipId: string) => void;
+}) {
+  return (
+    <div className="cited-narrative">
+      {claims.map((claim) => (
+        <article key={claim.claim_id}>
+          <p>{claim.text}</p>
+          <div className="report-citations" aria-label="Supporting evidence">
+            {claim.evidence_clip_ids.map((clipId) => (
+              <button
+                type="button"
+                key={clipId}
+                onClick={() => openEvidence(clipId)}
+              >
+                {clipId}
+              </button>
+            ))}
+          </div>
+        </article>
+      ))}
+    </div>
   );
 }
 

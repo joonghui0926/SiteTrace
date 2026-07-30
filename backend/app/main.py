@@ -49,6 +49,7 @@ pipeline = InvestigationPipeline(
     neo4j=neo4j_service,
     openai=openai_service,
     twelvelabs=twelvelabs_service,
+    aws_storage=aws_service,
 )
 
 
@@ -320,6 +321,18 @@ async def report(case_id: str) -> FileResponse:
             detail="The report requires safety-manager approval",
         )
     path = Path(record.report_path)
+    if not path.exists() and record.report_s3_uri:
+        try:
+            await asyncio.to_thread(
+                aws_service.download_uri,
+                record.report_s3_uri,
+                path,
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502,
+                detail="Approved report could not be restored from S3",
+            ) from exc
     if not path.exists():
         raise HTTPException(status_code=404, detail="Report file not found")
     return FileResponse(

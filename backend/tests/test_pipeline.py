@@ -119,6 +119,45 @@ def test_planned_and_observed_graphs_use_matching_zone_and_control_ids():
     assert graph_event["blocked_zone_ids"] == ["ZONE:WALKWAY_A"]
 
 
+def test_camera_start_metadata_orders_events_across_camera_boundaries():
+    first = ObservedEvent(
+        event_id="EVENT-A",
+        event_type="ROUTE_CHANGE",
+        summary="A worker changes route.",
+        camera_id="CAM-01",
+        start_sec=20,
+        end_sec=24,
+        evidence_clip_ids=["CLIP-A"],
+        confidence=0.9,
+    )
+    second = ObservedEvent(
+        event_id="EVENT-B",
+        event_type="EQUIPMENT_MOVEMENT",
+        summary="Equipment begins moving.",
+        camera_id="CAM-02",
+        start_sec=8,
+        end_sec=12,
+        evidence_clip_ids=["CLIP-B"],
+        confidence=0.9,
+    )
+    graph_events = InvestigationPipeline._neo4j_events(
+        [second, first],
+        EventStepMappingBatch(mappings=[]),
+        {},
+        {
+            "cam-01": 1_000_000,
+            "cam-02": 1_015_000,
+        },
+    )
+    graph_by_id = {event["id"]: event for event in graph_events}
+    assert graph_by_id["EVENT-A"]["global_start_ms"] == 1_020_000
+    assert graph_by_id["EVENT-B"]["global_start_ms"] == 1_023_000
+    assert graph_by_id["EVENT-A"]["precedes_event_ids"] == ["EVENT-B"]
+    assert graph_by_id["EVENT-A"]["sequence_basis"] == (
+        "camera metadata absolute timestamp"
+    )
+
+
 def test_graph_diff_conversion_never_labels_an_uncited_fact():
     findings = InvestigationPipeline._findings_from_graph_rows(
         "CASE-1",

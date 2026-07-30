@@ -136,12 +136,26 @@ class CorrectiveAction(BaseModel):
     status: str = "DRAFT"
 
 
+class CitedNarrativeClaim(BaseModel):
+    """One report paragraph whose factual content stays source-traceable."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    claim_id: str
+    text: str
+    evidence_clip_ids: list[str] = Field(min_length=1)
+    finding_ids: list[str] = Field(default_factory=list)
+
+
 class InvestigationPackage(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     case_id: str
     title: str
     incident_summary: str
+    incident_overview: list[CitedNarrativeClaim] = Field(default_factory=list)
+    event_timeline: list[CitedNarrativeClaim] = Field(default_factory=list)
+    deviation_summary: list[CitedNarrativeClaim] = Field(default_factory=list)
     planned_steps: list[PlannedStep] = Field(default_factory=list)
     events: list[ObservedEvent] = Field(default_factory=list)
     evidence_clips: list[EvidenceClip] = Field(default_factory=list)
@@ -173,6 +187,7 @@ class CaseRecord(BaseModel):
     approved_by: str | None = None
     approved_at: datetime | None = None
     report_path: str | None = None
+    report_s3_uri: str | None = None
     error: str | None = None
 
 

@@ -33,6 +33,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from .config import settings as app_settings
+
 logger = logging.getLogger(__name__)
 
 try:
@@ -79,9 +81,7 @@ except Exception as exc:  # pragma: no cover - exercised in dependency-light env
 
 UTC = timezone.utc
 _SKILLS_DIRECTORY = Path(__file__).resolve().parents[1] / "skills"
-_DEFAULT_SESSION_DIRECTORY = Path(
-    os.getenv("SITETRACE_SESSION_DIRECTORY", ".sitetrace/sessions")
-)
+_DEFAULT_SESSION_DIRECTORY = Path(app_settings.sitetrace_session_directory)
 
 
 class FindingStatus(StrEnum):
@@ -290,23 +290,16 @@ class OrchestrationSettings(BaseModel):
     """Environment-driven settings for Strands and AWS integration."""
 
     openai_api_key: str | None = Field(
-        default_factory=lambda: os.getenv("OPENAI_API_KEY")
+        default_factory=lambda: app_settings.openai_api_key or None
     )
     evidence_model: str = Field(
-        default_factory=lambda: os.getenv(
-            "OPENAI_NORMALIZATION_MODEL", "gpt-5.6-luna"
-        )
+        default_factory=lambda: app_settings.openai_normalization_model
     )
     reasoning_model: str = Field(
-        default_factory=lambda: os.getenv(
-            "OPENAI_REASONING_MODEL", "gpt-5.6-terra"
-        )
+        default_factory=lambda: app_settings.openai_reasoning_model
     )
     session_bucket: str | None = Field(
-        default_factory=lambda: (
-            os.getenv("SITETRACE_SESSION_BUCKET")
-            or os.getenv("SITETRACE_S3_BUCKET")
-        )
+        default_factory=lambda: app_settings.sitetrace_s3_bucket or None
     )
     session_prefix: str = Field(
         default_factory=lambda: os.getenv(
