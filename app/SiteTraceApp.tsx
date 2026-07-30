@@ -620,6 +620,7 @@ export function SiteTraceApp() {
             width={36}
             height={36}
             priority
+            unoptimized
           />
           <span>SiteTrace</span>
         </a>
@@ -1560,6 +1561,7 @@ function ReportView({
               alt=""
               width={30}
               height={30}
+              unoptimized
             />
             <span>SiteTrace</span>
           </div>
